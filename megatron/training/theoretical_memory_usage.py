@@ -236,7 +236,7 @@ def compute_lora_weight_and_optimizer_memory(args, verbose=False):
         num_moe_layers = 0
         moe_ffn_hidden_size = 0
     assert num_dense_layers + num_moe_layers == args.num_layers
-    assert args.mtp_num_layers is None, "MTP not supported for LoRA memory calculation yet"
+    assert args.mtp_num_layers is None or args.mtp_num_layers == 0, "MTP not supported for LoRA memory calculation yet"
 
     if args.multi_latent_attention:
         raise NotImplementedError("MLA not supported for LoRA memory calculation yet")

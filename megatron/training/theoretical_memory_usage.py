@@ -584,8 +584,9 @@ def report_theoretical_memory_sft(args, num_microbatches=None, verbose=False):
     total_memory = original_weights + lora_weights + activation_memory
 
     print(
-        f"Theoretical memory footprints: weight and optimizer={weight_and_optimizer_memory:.2f} MB, "
+        f"Theoretical memory footprints: model={original_weights:.2f} MB, "
+        f"LoRA weights and optimizer={lora_weights:.2f} MB, "
         f"activation={activation_memory:.2f} MB, total={total_memory:.2f} MB\n"
     )
 
-    return weight_and_optimizer_memory, activation_memory, total_memory
+    return original_weights, activation_memory, total_memory

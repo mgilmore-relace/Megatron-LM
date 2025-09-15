@@ -195,6 +195,184 @@ def compute_weight_and_optimizer_memory(args, verbose=False, train=True):
 
     return weight_and_optimizer_memory
 
+def compute_lora_weight_and_optimizer_memory(args, verbose=False):
+    # Attention projection size.
+    # TODO: Is this correct for LoRA?
+    query_projection_size = args.kv_channels * args.num_attention_heads
+    query_projection_to_hidden_size_ratio = query_projection_size / args.hidden_size
+    # Group Query Attention.
+    if not args.group_query_attention:
+        args.num_query_groups = args.num_attention_heads
+    # MoE.
+    num_experts = 1 if args.num_experts is None else args.num_experts
+    gated_linear_multiplier = 3 / 2 if args.swiglu else 1
+    
+    shared_expert_ffn_hidden_size = (
+        0
+        if args.moe_shared_expert_intermediate_size is None
+        else args.moe_shared_expert_intermediate_size
+    )
+
+    # NOTE: done?
+    if args.num_experts is not None:
+        if isinstance(args.moe_layer_freq, int):
+            moe_layer_pattern = [
+                1 if (i % args.moe_layer_freq == 0) else 0 for i in range(args.num_layers)
+            ]
+        elif isinstance(args.moe_layer_freq, list):
+            moe_layer_pattern = args.moe_layer_freq
+            assert len(moe_layer_pattern) == args.num_layers, (
+                f"Invalid length of moe_layer_pattern: {len(moe_layer_pattern)}, "
+                f"expected {args.num_layers}, "
+                f"current moe layer pattern: {args.moe_layer_freq}"
+            )
+
+        num_dense_layers = args.num_layers - sum(moe_layer_pattern)
+        num_moe_layers = sum(moe_layer_pattern)
+        moe_ffn_hidden_size = args.moe_ffn_hidden_size
+    else:
+        moe_layer_pattern = [0] * args.num_layers
+        num_dense_layers = args.num_layers
+        num_moe_layers = 0
+        moe_ffn_hidden_size = 0
+    assert num_dense_layers + num_moe_layers == args.num_layers
+    assert args.mtp_num_layers is None, "MTP not supported for LoRA memory calculation yet"
+
+    if args.multi_latent_attention:
+        raise NotImplementedError("MLA not supported for LoRA memory calculation yet")
+        assert not args.group_query_attention
+        if args.q_lora_rank is None:
+            q_term = args.hidden_size * args.num_attention_heads * (args.qk_head_dim + args.qk_pos_emb_head_dim)
+        else:
+            ## q lora + rope + q norm
+            q_term = args.q_lora_rank * (args.hidden_size + args.num_attention_heads * (args.qk_head_dim + args.qk_pos_emb_head_dim) + 1) 
+        
+        self_attn_term = (
+            q_term
+
+            ## kv lora + rope + kv norm
+            + args.kv_lora_rank
+            * (args.hidden_size + args.num_attention_heads * (args.qk_head_dim + args.v_head_dim) + 1)
+            + args.hidden_size * args.qk_pos_emb_head_dim
+
+            ## o proj
+            + (args.num_attention_heads * args.v_head_dim) * args.hidden_size
+        )
+    else:
+        #TODO: Double check this formula
+        self_attn_term = (
+            2
+            * args.hidden_size
+            * args.lora_rank
+            * (
+                # Attention.
+                (
+                    (1 + (args.num_query_groups / args.num_attention_heads))
+                    * query_projection_to_hidden_size_ratio
+                )
+            )
+        )
+
+    # NOTE: done?
+    num_parameters_in_transformer_layer_dense = (
+        2
+        * args.lora_rank
+        * (
+            # Dense MoE MLP.
+            (args.ffn_hidden_size + args.hidden_size)
+            # TODO: Are LayerNorm weights included in LoRA?
+            # Transformer layernorms. 
+            + (2)
+        )
+        + self_attn_term
+    )
+    # NOTE: done?
+    num_parameters_in_transformer_layer_moe = (
+        2
+        * args.lora_rank
+        * (
+            # MoE MLP.
+            + (args.hidden_size + moe_ffn_hidden_size * num_experts * gated_linear_multiplier)
+            # TODO: not sure what to do with this?
+            # Shared MoE MLP.
+            + (shared_expert_ffn_hidden_size * gated_linear_multiplier)
+            # TODO: Are LayerNorm weights included in LoRA?
+            # Transformer layernorms.
+            + (2)
+        )
+        + self_attn_term
+    )
+    embedding_size = args.lora_rank * (args.hidden_size + args.padded_vocab_size)
+    if args.untie_embeddings_and_output_weights:
+        num_parameters_in_embedding_layers = 2 * embedding_size
+    else:
+        num_parameters_in_embedding_layers = embedding_size
+    num_parameters_in_transformer_block = (
+        num_parameters_in_transformer_layer_dense * num_dense_layers
+        + num_parameters_in_transformer_layer_moe * num_moe_layers
+    )
+    num_total_parameters = (
+        num_parameters_in_transformer_block
+        + num_parameters_in_embedding_layers
+    )
+    if verbose:
+        print(
+            f"Number of parameters in transformer block in billions: "
+            f"{num_parameters_in_transformer_block / 10**9: .2f}"
+        )
+        if args.mtp_num_layers is not None:
+            print(
+                f"Number of parameters in mtp block in billions: "
+                f"{num_parameters_in_mtp_block / 10**9: .2f}"
+            )
+        print(
+            f"Number of parameters in embedding layers in billions: "
+            f"{num_parameters_in_embedding_layers / 10**9:.2f}"
+        )
+        print(f"Total number of parameters in billions: {num_total_parameters / 10**9:.2f}")
+
+    # Most loaded model shard has (1/pp_size transformer layers + 1 mtp block + 1 embedding layer) / tp_size.
+    num_parameters_on_most_loaded_model_shard = (
+        (num_parameters_in_transformer_block / args.pipeline_model_parallel_size)
+        + embedding_size
+    ) / args.tensor_model_parallel_size
+    if args.untie_embeddings_and_output_weights and args.pipeline_model_parallel_size == 1:
+        num_parameters_on_most_loaded_model_shard += (
+            embedding_size / args.tensor_model_parallel_size
+        )
+    if verbose:
+        print(
+            f"Number of parameters in most loaded shard in billions: "
+            f"{num_parameters_on_most_loaded_model_shard / 10**9:.4f}"
+        )
+
+    if args.pipeline_model_parallel_size > 1:
+        # Other shards just have (1/pp_size transformer layers) / tp_size.
+        num_parameters_on_other_model_shards = num_parameters_in_transformer_block / (
+            args.pipeline_model_parallel_size * args.tensor_model_parallel_size
+        )
+        if verbose:
+            print(
+                f"Number of parameters in other shards in billions: "
+                f"{num_parameters_on_other_model_shards / 10**9:.4f}"
+            )
+
+    #   2 (bfloat16 weight)
+    # + 4 (float32 weight)
+    # + 4 (float32 graident)
+    # + 4 (float32 Adam 1st moment estimate)
+    # + 4 (float32 Adam 2nd moment estimate)
+    # = 18 bytes per parameter if not using distributed optimizer
+    num_bytes_per_parameter = (
+        18 if not args.use_distributed_optimizer else 6 + (12 / args.data_parallel_size)
+    )
+    
+    weight_and_optimizer_memory = (
+        num_parameters_on_most_loaded_model_shard * num_bytes_per_parameter
+    )
+
+    return weight_and_optimizer_memory
+
 
 def compute_activation_memory(args, num_microbatches, verbose=False):
     # Using formula in Table 2 of https://arxiv.org/pdf/2205.05198.pdf.
@@ -381,8 +559,12 @@ def report_theoretical_memory_sft(args, num_microbatches=None, verbose=False):
         print("Theoretical memory footprints not yet supported for hybrid Mamba-Transformer models.")
         return
 
-    weight_and_optimizer_memory = (
-        compute_weight_and_optimizer_memory(args, verbose=verbose, sft=True) / NUM_BYTES_IN_MEGABYTE
+    original_weights = (
+        compute_weight_and_optimizer_memory(args, verbose=verbose, train=False) / NUM_BYTES_IN_MEGABYTE
+    )
+
+    lora_weights = (
+        compute_lora_weight_and_optimizer_memory(args, verbose=verbose) / NUM_BYTES_IN_MEGABYTE
     )
 
     # Choose the appropriate activation memory calculation based on parallelism strategy
@@ -399,7 +581,7 @@ def report_theoretical_memory_sft(args, num_microbatches=None, verbose=False):
             / NUM_BYTES_IN_MEGABYTE
         )
 
-    total_memory = weight_and_optimizer_memory + activation_memory
+    total_memory = original_weights + lora_weights + activation_memory
 
     print(
         f"Theoretical memory footprints: weight and optimizer={weight_and_optimizer_memory:.2f} MB, "

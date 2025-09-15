@@ -9,7 +9,7 @@ from .utils import print_rank_0
 NUM_BYTES_IN_MEGABYTE = 1024 * 1024
 
 
-def compute_weight_and_optimizer_memory(args, verbose=False):
+def compute_weight_and_optimizer_memory(args, verbose=False, train=True):
     # Attention projection size.
     query_projection_size = args.kv_channels * args.num_attention_heads
     query_projection_to_hidden_size_ratio = query_projection_size / args.hidden_size
@@ -176,9 +176,19 @@ def compute_weight_and_optimizer_memory(args, verbose=False):
                 f"{num_parameters_on_other_model_shards / 10**9:.4f}"
             )
 
-    num_bytes_per_parameter = (
-        18 if not args.use_distributed_optimizer else 6 + (12 / args.data_parallel_size)
-    )
+    if train:
+        #   2 (bfloat16 weight)
+        # + 4 (float32 weight)
+        # + 4 (float32 graident)
+        # + 4 (float32 Adam 1st moment estimate)
+        # + 4 (float32 Adam 2nd moment estimate)
+        # = 18 bytes per parameter if not using distributed optimizer
+        num_bytes_per_parameter = (
+            18 if not args.use_distributed_optimizer else 6 + (12 / args.data_parallel_size)
+        )
+    else:
+        num_bytes_per_parameter = 2
+    
     weight_and_optimizer_memory = (
         num_parameters_on_most_loaded_model_shard * num_bytes_per_parameter
     )
@@ -341,6 +351,38 @@ def report_theoretical_memory(args, num_microbatches=None, verbose=False):
 
     weight_and_optimizer_memory = (
         compute_weight_and_optimizer_memory(args, verbose=verbose) / NUM_BYTES_IN_MEGABYTE
+    )
+
+    # Choose the appropriate activation memory calculation based on parallelism strategy
+    if args.sequence_parallel and args.recompute_granularity == 'selective':
+        print_rank_0("compute_activation_memory with SP")
+        activation_memory = (
+            compute_activation_memory(args, num_microbatches=num_microbatches, verbose=verbose)
+            / NUM_BYTES_IN_MEGABYTE
+        )
+    else:
+        print_rank_0("compute_activation_memory_without_sp")
+        activation_memory = (
+            compute_activation_memory_without_sp(args, num_microbatches=num_microbatches, verbose=verbose)
+            / NUM_BYTES_IN_MEGABYTE
+        )
+
+    total_memory = weight_and_optimizer_memory + activation_memory
+
+    print(
+        f"Theoretical memory footprints: weight and optimizer={weight_and_optimizer_memory:.2f} MB, "
+        f"activation={activation_memory:.2f} MB, total={total_memory:.2f} MB\n"
+    )
+
+    return weight_and_optimizer_memory, activation_memory, total_memory
+
+def report_theoretical_memory_sft(args, num_microbatches=None, verbose=False):
+    if args.is_hybrid_model:
+        print("Theoretical memory footprints not yet supported for hybrid Mamba-Transformer models.")
+        return
+
+    weight_and_optimizer_memory = (
+        compute_weight_and_optimizer_memory(args, verbose=verbose, sft=True) / NUM_BYTES_IN_MEGABYTE
     )
 
     # Choose the appropriate activation memory calculation based on parallelism strategy

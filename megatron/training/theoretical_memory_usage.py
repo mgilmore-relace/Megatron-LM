@@ -248,7 +248,7 @@ def compute_lora_weight_and_optimizer_memory(args, verbose=False):
         self_attn_term = (
             2
             * args.hidden_size
-            * args.lora_rank
+            * args.kv_lora_rank
             * (
                 # Attention.
                 (

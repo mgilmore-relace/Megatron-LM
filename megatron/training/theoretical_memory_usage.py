@@ -380,8 +380,9 @@ def compute_activation_memory(args, num_microbatches, verbose=False):
     dense_activation_memory *= num_dense_layers
 
     # Memory footprint for moe transformer layer (self-attention and MLP).
+    activation_factor = 8 if args.swiglu else 2
     moe_activation_memory = (args.seq_length * args.micro_batch_size) * (
-        17 * args.hidden_size + args.moe_router_topk * (5 * args.moe_ffn_hidden_size + 2 * args.hidden_size)
+        17 * args.hidden_size + args.moe_router_topk * ((3 + activation_factor) * args.moe_ffn_hidden_size + 2 * args.hidden_size)
     )
     if verbose:
         print(

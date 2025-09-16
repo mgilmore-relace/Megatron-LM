@@ -305,11 +305,11 @@ def compute_lora_weight_and_optimizer_memory(args, verbose=False):
             f"Number of parameters in transformer block in billions: "
             f"{num_parameters_in_transformer_block / 10**9: .2f}"
         )
-        if args.mtp_num_layers is not None:
-            print(
-                f"Number of parameters in mtp block in billions: "
-                f"{num_parameters_in_mtp_block / 10**9: .2f}"
-            )
+        # if args.mtp_num_layers is not None:
+        #     print(
+        #         f"Number of parameters in mtp block in billions: "
+        #         f"{num_parameters_in_mtp_block / 10**9: .2f}"
+        #     )
         print(
             f"Number of parameters in embedding layers in billions: "
             f"{num_parameters_in_embedding_layers / 10**9:.2f}"

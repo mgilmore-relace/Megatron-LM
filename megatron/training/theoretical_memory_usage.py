@@ -8,6 +8,38 @@ from .utils import print_rank_0
 
 NUM_BYTES_IN_MEGABYTE = 1024 * 1024
 
+def compute_layers(args):
+    if args.num_experts is not None:
+        if isinstance(args.moe_layer_freq, int):
+            moe_layer_pattern = [
+                1 if (i % args.moe_layer_freq == 0) else 0 for i in range(args.num_layers)
+            ]
+        elif isinstance(args.moe_layer_freq, list):
+            moe_layer_pattern = args.moe_layer_freq
+            assert len(moe_layer_pattern) == args.num_layers, (
+                f"Invalid length of moe_layer_pattern: {len(moe_layer_pattern)}, "
+                f"expected {args.num_layers}, "
+                f"current moe layer pattern: {args.moe_layer_freq}"
+            )
+
+        num_dense_layers = args.num_layers - sum(moe_layer_pattern)
+        num_moe_layers = sum(moe_layer_pattern)
+    else:
+        moe_layer_pattern = [0] * args.num_layers
+        num_dense_layers = args.num_layers
+        num_moe_layers = 0
+        args.moe_ffn_hidden_size = 0
+    assert num_dense_layers + num_moe_layers == args.num_layers
+    if args.mtp_num_layers is not None:
+        mtp_layer_is_moe = moe_layer_pattern[-1]
+        mtp_num_moe_layers = mtp_layer_is_moe * args.mtp_num_layers
+        mtp_num_dense_layers = (1 - mtp_layer_is_moe) * args.mtp_num_layers
+    else:
+        mtp_num_moe_layers = 0
+        mtp_num_dense_layers = 0
+    
+    return num_dense_layers, num_moe_layers, mtp_num_dense_layers, mtp_num_moe_layers
+
 
 def compute_weight_and_optimizer_memory(args, verbose=False, train=True):
     # Attention projection size.
@@ -26,35 +58,7 @@ def compute_weight_and_optimizer_memory(args, verbose=False, train=True):
         else args.moe_shared_expert_intermediate_size
     )
 
-    if args.num_experts is not None:
-        if isinstance(args.moe_layer_freq, int):
-            moe_layer_pattern = [
-                1 if (i % args.moe_layer_freq == 0) else 0 for i in range(args.num_layers)
-            ]
-        elif isinstance(args.moe_layer_freq, list):
-            moe_layer_pattern = args.moe_layer_freq
-            assert len(moe_layer_pattern) == args.num_layers, (
-                f"Invalid length of moe_layer_pattern: {len(moe_layer_pattern)}, "
-                f"expected {args.num_layers}, "
-                f"current moe layer pattern: {args.moe_layer_freq}"
-            )
-
-        num_dense_layers = args.num_layers - sum(moe_layer_pattern)
-        num_moe_layers = sum(moe_layer_pattern)
-        moe_ffn_hidden_size = args.moe_ffn_hidden_size
-    else:
-        moe_layer_pattern = [0] * args.num_layers
-        num_dense_layers = args.num_layers
-        num_moe_layers = 0
-        moe_ffn_hidden_size = 0
-    assert num_dense_layers + num_moe_layers == args.num_layers
-    if args.mtp_num_layers is not None:
-        mtp_layer_is_moe = moe_layer_pattern[-1]
-        mtp_num_moe_layers = mtp_layer_is_moe * args.mtp_num_layers
-        mtp_num_dense_layers = (1 - mtp_layer_is_moe) * args.mtp_num_layers
-    else:
-        mtp_num_moe_layers = 0
-        mtp_num_dense_layers = 0
+    num_dense_layers, num_moe_layers, mtp_num_dense_layers, mtp_num_moe_layers = compute_layers(args)
 
     if args.multi_latent_attention:
         assert not args.group_query_attention
@@ -105,7 +109,7 @@ def compute_weight_and_optimizer_memory(args, verbose=False, train=True):
         * args.hidden_size
         * (
             # MoE MLP.
-            + (moe_ffn_hidden_size * num_experts * gated_linear_multiplier)
+            + (args.moe_ffn_hidden_size * num_experts * gated_linear_multiplier)
             # Shared MoE MLP.
             + (shared_expert_ffn_hidden_size * gated_linear_multiplier)
             # Transformer layernorms.
@@ -214,28 +218,9 @@ def compute_lora_weight_and_optimizer_memory(args, verbose=False):
     )
 
     # NOTE: done?
-    if args.num_experts is not None:
-        if isinstance(args.moe_layer_freq, int):
-            moe_layer_pattern = [
-                1 if (i % args.moe_layer_freq == 0) else 0 for i in range(args.num_layers)
-            ]
-        elif isinstance(args.moe_layer_freq, list):
-            moe_layer_pattern = args.moe_layer_freq
-            assert len(moe_layer_pattern) == args.num_layers, (
-                f"Invalid length of moe_layer_pattern: {len(moe_layer_pattern)}, "
-                f"expected {args.num_layers}, "
-                f"current moe layer pattern: {args.moe_layer_freq}"
-            )
-
-        num_dense_layers = args.num_layers - sum(moe_layer_pattern)
-        num_moe_layers = sum(moe_layer_pattern)
-        moe_ffn_hidden_size = args.moe_ffn_hidden_size
-    else:
-        moe_layer_pattern = [0] * args.num_layers
-        num_dense_layers = args.num_layers
-        num_moe_layers = 0
-        moe_ffn_hidden_size = 0
+    num_dense_layers, num_moe_layers, *_ = compute_layers(args)
     assert num_dense_layers + num_moe_layers == args.num_layers
+
     assert args.mtp_num_layers is None or args.mtp_num_layers == 0, "MTP not supported for LoRA memory calculation yet"
 
     if args.multi_latent_attention:
@@ -292,7 +277,7 @@ def compute_lora_weight_and_optimizer_memory(args, verbose=False):
         * args.lora_rank
         * (
             # MoE MLP.
-            + (args.hidden_size + moe_ffn_hidden_size * num_experts * gated_linear_multiplier)
+            + (args.hidden_size + args.moe_ffn_hidden_size * num_experts * gated_linear_multiplier)
             # TODO: not sure what to do with this?
             # Shared MoE MLP.
             + (shared_expert_ffn_hidden_size * gated_linear_multiplier)
@@ -378,20 +363,35 @@ def compute_activation_memory(args, num_microbatches, verbose=False):
     # Using formula in Table 2 of https://arxiv.org/pdf/2205.05198.pdf.
     # We are trying to compute the maximum activation footprint, so all calculations in this
     # function are for the first pipeline stage.
+    num_dense_layers, num_moe_layers, *_ = compute_layers(args)
 
     # TODO: This function needs to take into account query_projection_size potentially being
     # different from hidden_size.
 
-    # Memory footprint from transformer layer (self-attention and MLP).
-    activation_memory = (args.seq_length * args.micro_batch_size * args.hidden_size) * (
+    # Memory footprint for dense transformer layer (self-attention and MLP).
+    dense_activation_memory = (args.seq_length * args.micro_batch_size * args.hidden_size) * (
         18 + (4 * (args.ffn_hidden_size / args.hidden_size))
     )
     if verbose:
         print(
-            f"Activation memory footprint per transformer layer: "
-            f"{activation_memory / NUM_BYTES_IN_MEGABYTE / args.tensor_model_parallel_size:.1f} MB"
+            f"Activation memory footprint per dense transformer layer: "
+            f"{dense_activation_memory / NUM_BYTES_IN_MEGABYTE / args.tensor_model_parallel_size:.1f} MB"
         )
-    activation_memory *= args.num_layers
+    dense_activation_memory *= num_dense_layers
+
+    # Memory footprint for moe transformer layer (self-attention and MLP).
+    moe_activation_memory = (args.seq_length * args.micro_batch_size * args.hidden_size) * (
+        18 + (1 + args.num_experts * (args.moe_ffn_hidden_size / args.hidden_size + 1))
+    )
+    if verbose:
+        print(
+            f"Activation memory footprint per dense transformer layer: "
+            f"{moe_activation_memory / NUM_BYTES_IN_MEGABYTE / args.tensor_model_parallel_size:.1f} MB"
+        )
+    moe_activation_memory *= num_moe_layers
+
+    # set total activation memory to sum of dense and moe layer activation memory
+    activation_memory = dense_activation_memory + moe_activation_memory
 
     # Now add activation memory required for input embeddings, last LayerNorm and output layer.
 

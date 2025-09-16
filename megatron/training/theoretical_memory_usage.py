@@ -363,7 +363,14 @@ def compute_activation_memory(args, num_microbatches, verbose=False):
             f"Activation memory footprint per dense transformer layer: "
             f"{dense_activation_memory / NUM_BYTES_IN_MEGABYTE / args.tensor_model_parallel_size:.1f} MB"
         )
-    dense_activation_memory *= num_dense_layers
+    if num_dense_layers == 0:
+        dense_activation_memory = 0
+    elif args.recompute_granularity == 'full':
+        dense_activation_memory += 2 * num_dense_layers * args.hidden_size * args.seq_length * args.micro_batch_size
+    elif args.recompute_granularity == 'selective':
+        dense_activation_memory *= num_dense_layers
+    else:
+        raise ValueError(f"Unknown recompute granularity: {args.recompute_granularity}")
 
     # Memory footprint for moe transformer layer (self-attention and MLP).
     activation_factor = 8 if args.swiglu else 2
@@ -375,7 +382,12 @@ def compute_activation_memory(args, num_microbatches, verbose=False):
             f"Activation memory footprint per moe transformer layer: "
             f"{moe_activation_memory / NUM_BYTES_IN_MEGABYTE / args.tensor_model_parallel_size:.1f} MB"
         )
-    moe_activation_memory *= num_moe_layers
+    if num_moe_layers == 0:
+        moe_activation_memory = 0
+    elif args.recompute_granularity == 'full':
+        moe_activation_memory += 2 * num_moe_layers * args.hidden_size * args.seq_length * args.micro_batch_size
+    elif args.recompute_granularity == 'selective':
+        moe_activation_memory *= num_moe_layers
 
     # set total activation memory to sum of dense and moe layer activation memory
     activation_memory = dense_activation_memory + moe_activation_memory
@@ -558,7 +570,7 @@ def report_theoretical_memory_sft(args, num_microbatches=None, verbose=False):
     )
 
     # Choose the appropriate activation memory calculation based on parallelism strategy
-    if args.sequence_parallel and args.recompute_granularity == 'selective':
+    if args.sequence_parallel and args.recompute_granularity in ['selective', 'full']:
         print_rank_0("compute_activation_memory with SP")
         activation_memory = (
             compute_activation_memory(args, num_microbatches=num_microbatches, verbose=verbose)

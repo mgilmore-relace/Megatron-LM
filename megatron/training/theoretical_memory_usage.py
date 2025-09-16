@@ -385,7 +385,7 @@ def compute_activation_memory(args, num_microbatches, verbose=False):
     )
     if verbose:
         print(
-            f"Activation memory footprint per dense transformer layer: "
+            f"Activation memory footprint per moe transformer layer: "
             f"{moe_activation_memory / NUM_BYTES_IN_MEGABYTE / args.tensor_model_parallel_size:.1f} MB"
         )
     moe_activation_memory *= num_moe_layers

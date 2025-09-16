@@ -262,13 +262,7 @@ def compute_lora_weight_and_optimizer_memory(args, verbose=False):
     num_parameters_in_transformer_layer_dense = (
         2
         * args.lora_rank
-        * (
-            # Dense MoE MLP.
-            (args.ffn_hidden_size + args.hidden_size)
-            # TODO: Are LayerNorm weights included in LoRA?
-            # Transformer layernorms. 
-            + (2)
-        )
+        * (args.ffn_hidden_size + args.hidden_size)
         + self_attn_term
     )
     # NOTE: done?
@@ -281,9 +275,6 @@ def compute_lora_weight_and_optimizer_memory(args, verbose=False):
             # TODO: not sure what to do with this?
             # Shared MoE MLP.
             + (shared_expert_ffn_hidden_size * gated_linear_multiplier)
-            # TODO: Are LayerNorm weights included in LoRA?
-            # Transformer layernorms.
-            + (2)
         )
         + self_attn_term
     )
@@ -305,11 +296,6 @@ def compute_lora_weight_and_optimizer_memory(args, verbose=False):
             f"Number of parameters in transformer block in billions: "
             f"{num_parameters_in_transformer_block / 10**9: .2f}"
         )
-        # if args.mtp_num_layers is not None:
-        #     print(
-        #         f"Number of parameters in mtp block in billions: "
-        #         f"{num_parameters_in_mtp_block / 10**9: .2f}"
-        #     )
         print(
             f"Number of parameters in embedding layers in billions: "
             f"{num_parameters_in_embedding_layers / 10**9:.2f}"
@@ -369,7 +355,7 @@ def compute_activation_memory(args, num_microbatches, verbose=False):
     # different from hidden_size.
 
     # Memory footprint for dense transformer layer (self-attention and MLP).
-    dense_activation_memory = (args.seq_length * args.micro_batch_size * args.hidden_size) * (
+    dense_activation_memory = 2 * (args.seq_length * args.micro_batch_size * args.hidden_size) * (
         18 + (4 * (args.ffn_hidden_size / args.hidden_size))
     )
     if verbose:
@@ -517,7 +503,7 @@ def compute_activation_memory_without_sp(args, num_microbatches, verbose=False):
         total_activation_memory += (logits_size + final_ln_output) * 2  # multiply by 2 for bytes
 
     # 9. Add buffer for optimizer and miscellaneous temporaries (5% overhead)
-    overhead_factor = 1.05
+    overhead_factor = 1.15
     total_activation_memory *= overhead_factor
 
     return total_activation_memory

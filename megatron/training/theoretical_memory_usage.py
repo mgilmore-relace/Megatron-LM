@@ -381,7 +381,7 @@ def compute_activation_memory(args, num_microbatches, verbose=False):
 
     # Memory footprint for moe transformer layer (self-attention and MLP).
     moe_activation_memory = (args.seq_length * args.micro_batch_size * args.hidden_size) * (
-        18 + (1 + args.num_experts * (args.moe_ffn_hidden_size / args.hidden_size + 1))
+        18 + 4 * (1 + args.moe_router_topk * (args.moe_ffn_hidden_size / args.hidden_size + 1))
     )
     if verbose:
         print(

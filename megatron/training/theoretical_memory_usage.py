@@ -431,6 +431,9 @@ def compute_activation_memory(args, num_microbatches, verbose=False):
             * (1 + (args.padded_vocab_size / args.hidden_size))
         )
 
+    overhead_factor = 1.15
+    activation_memory *= overhead_factor
+
     # Activation memory is partitioned by TP size due to tensor and sequence model parallelism.
     return activation_memory / (args.tensor_model_parallel_size * args.context_parallel_size)
 

@@ -445,7 +445,7 @@ def compute_activation_memory(args, num_microbatches, verbose=False):
         )
 
     # Activation memory is partitioned by TP size due to tensor and sequence model parallelism.
-    return activation_memory / args.tensor_model_parallel_size
+    return activation_memory / (args.tensor_model_parallel_size * args.context_parallel_size)
 
 
 def compute_activation_memory_without_sp(args, num_microbatches, verbose=False):
